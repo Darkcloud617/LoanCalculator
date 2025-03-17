@@ -1,0 +1,391 @@
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, PhotoImage, Toplevel, ttk
+import pandas as pd
+import base64
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+import openpyxl
+from openpyxl.drawing.image import Image as OpenpyxlImage
+
+start_time = time.time()
+
+logo_base64 = """
+BASE64 GOES HERE
+"""
+
+def log_time(message):
+    elapsed_time = time.time() - start_time
+    print(f"{message}: {elapsed_time:.2f} seconds")
+
+class Tooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.widget.bind("<Enter>", self.show_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        x, y, cx, cy = self.widget.bbox("insert")
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 25
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=self.text, justify='left',
+                         background="#ffffe0", relief='solid', borderwidth=1,
+                         font=("tahoma", "8", "normal"))
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+log_time("Imported libraries")
+
+def get_image_from_base64():
+    logo_data = base64.b64decode(logo_base64)
+    return ImageReader(BytesIO(logo_data))
+
+def get_openpyxl_image():
+    logo_data = base64.b64decode(logo_base64)
+    return OpenpyxlImage(BytesIO(logo_data))
+
+def export_to_excel(amortization_df):
+    log_time("Starting export_to_excel")
+    filepath = filedialog.asksaveasfilename(
+        defaultextension='.xlsx',
+        filetypes=[("Excel files", "*.xlsx")],
+        initialfile='Loan Amortization Schedule'
+    )
+    if not filepath:
+        return
+
+    amortization_df['Month'] = amortization_df['Month'].astype(int)
+    amortization_df['Principal'] = amortization_df['Principal'].apply(lambda x: f"${x:,.2f}")
+    amortization_df['Interest'] = amortization_df['Interest'].apply(lambda x: f"${x:,.2f}")
+    amortization_df['Remaining Balance'] = amortization_df['Remaining Balance'].apply(lambda x: f"${x:,.2f}")
+
+    with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+        amortization_df.to_excel(writer, index=False, startrow=6)
+        workbook = writer.book
+        worksheet = writer.sheets['Sheet1']
+
+        img = get_openpyxl_image()
+        img.anchor = 'A1'
+        worksheet.add_image(img)
+
+        for column_cells in worksheet.columns:
+            length = max(len(as_text(cell.value)) for cell in column_cells)
+            worksheet.column_dimensions[column_cells[0].column_letter].width = length
+
+    log_time("Finished export_to_excel")
+
+def as_text(value):
+    if value is None:
+        return ""
+    return str(value)
+
+def export_to_pdf(amortization_df):
+    log_time("Starting export_to_pdf")
+    filepath = filedialog.asksaveasfilename(
+        defaultextension='.pdf',
+        filetypes=[("PDF files", "*.pdf")],
+        initialfile='Loan Amortization Schedule'
+    )
+    if not filepath:
+        return
+
+    c = canvas.Canvas(filepath, pagesize=letter)
+    c.setFont("Helvetica", 12)
+
+    logo = get_image_from_base64()
+    c.drawImage(logo, 40, 740, width=150, height=50, preserveAspectRatio=True, mask='auto')
+
+    header_positions = [40, 120, 220, 350]
+    y_position = 720
+    headers = ["Month", "Principal", "Interest", "Remaining Balance"]
+    for header, x_pos in zip(headers, header_positions):
+        c.drawString(x_pos, y_position, header)
+
+    y_position -= 20
+    max_rows_per_page = 30
+    row_counter = 0
+
+    for index, row in amortization_df.iterrows():
+        if row_counter >= max_rows_per_page or y_position < 40:
+            c.showPage()
+            c.setFont("Helvetica", 12)
+            y_position = 750
+            for header, x_pos in zip(headers, header_positions):
+                c.drawString(x_pos, y_position, header)
+            y_position -= 20
+            row_counter = 0
+
+        c.drawString(header_positions[0], y_position, str(row['Month']))
+        c.drawString(header_positions[1], y_position, str(row['Principal']))
+        c.drawString(header_positions[2], y_position, str(row['Interest']))
+        c.drawString(header_positions[3], y_position, str(row['Remaining Balance']))
+
+        y_position -= 20
+        row_counter += 1
+
+    c.save()
+    log_time("Finished export_to_pdf")
+
+def show_amortization_schedule():
+    try:
+        log_time("Starting show_amortization_schedule")
+        loan_amount = float(purchase_price_var.get())
+        annual_pmi_percent = float(annual_pmi_var.get()) / 100 if annual_pmi_var.get() else 0
+        annual_interest_rate = float(annual_interest_rate_var.get())
+        loan_months = int(loan_months_var.get())
+
+        monthly_interest_rate = annual_interest_rate / 100 / 12
+
+        # Monthly Payment Calculation
+        if monthly_interest_rate > 0:
+            monthly_payment = loan_amount * (monthly_interest_rate * (1 + monthly_interest_rate) ** loan_months) / ((1 + monthly_interest_rate) ** loan_months - 1)
+        else:
+            monthly_payment = loan_amount / loan_months
+
+        schedule_window = Toplevel()
+        schedule_window.title("Amortization Schedule")
+        schedule_window.configure(background='#174A7C')
+
+        frame = tk.Frame(schedule_window, bg='#174A7C')
+        frame.pack(expand=True, fill='both')
+
+        tree = ttk.Treeview(frame, columns=("Month", "Principal", "Interest", "Remaining Balance"), show='headings')
+        tree.heading("Month", text="Month")
+        tree.heading("Principal", text="Principal")
+        tree.heading("Interest", text="Interest")
+        tree.heading("Remaining Balance", text="Remaining Balance")
+
+        style = ttk.Style()
+        style.configure("Treeview", background="#174A7C", foreground="white", fieldbackground="#174A7C")
+        style.map('Treeview', background=[('selected', '#174A7C')], foreground=[('selected', 'white')])
+
+        tree.tag_configure('oddrow', background='#174A7C', foreground='white')
+        tree.tag_configure('evenrow', background='#174A7C', foreground='white')
+
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        tree.pack(expand=True, fill='both')
+
+        remaining_balance = loan_amount
+        data = []
+        for month in range(1, loan_months + 1):
+            interest_payment = remaining_balance * monthly_interest_rate
+            principal_payment = monthly_payment - interest_payment
+            remaining_balance -= principal_payment
+            tag = 'oddrow' if month % 2 != 0 else 'evenrow'
+            tree.insert("", "end", values=(month, f"${principal_payment:,.2f}", f"${interest_payment:,.2f}", f"${remaining_balance:,.2f}"), tags=(tag,))
+            data.append((month, principal_payment, interest_payment, remaining_balance))
+
+        amortization_df = pd.DataFrame(data, columns=["Month", "Principal", "Interest", "Remaining Balance"])
+
+        button_frame = tk.Frame(schedule_window, bg='#174A7C')
+        button_frame.pack(pady=10)
+
+        export_excel_button = tk.Button(button_frame, text="Export to Excel", command=lambda: export_to_excel(amortization_df), bg='#EE3524', fg='white')
+        export_excel_button.pack(side="left", padx=10)
+
+        export_pdf_button = tk.Button(button_frame, text="Export to PDF", command=lambda: export_to_pdf(amortization_df), bg='#EE3524', fg='white')
+        export_pdf_button.pack(side="right", padx=10)
+        log_time("Finished show_amortization_schedule")
+
+    except ValueError:
+        messagebox.showerror("Input Error", "Please enter valid numbers.")
+
+def calculate_payment():
+    try:
+        log_time("Starting calculate_payment")
+        loan_amount = float(purchase_price_var.get())
+        annual_taxes = float(annual_taxes_var.get()) if annual_taxes_var.get() else 0
+        annual_insurance = float(annual_insurance_var.get()) if annual_insurance_var.get() else 0
+        annual_pmi_percent = float(annual_pmi_var.get()) / 100 if annual_pmi_var.get() else 0
+        annual_interest_rate = float(annual_interest_rate_var.get())
+        loan_months = int(loan_months_var.get())
+
+        monthly_interest_rate = annual_interest_rate / 100 / 12
+
+        # Monthly Payment Calculation
+        if monthly_interest_rate > 0:
+            monthly_payment = loan_amount * (monthly_interest_rate * (1 + monthly_interest_rate) ** loan_months) / ((1 + monthly_interest_rate) ** loan_months - 1)
+        else:
+            monthly_payment = loan_amount / loan_months
+
+        monthly_taxes = annual_taxes / 12
+        monthly_insurance = annual_insurance / 12
+        monthly_pmi = loan_amount * annual_pmi_percent / 12
+        total_monthly_payment = monthly_payment + monthly_taxes + monthly_insurance + monthly_pmi
+
+        total_loan_amount_var.set(f"${loan_amount:,.2f}")
+        taxes_per_month_var.set(f"${monthly_taxes:,.2f}")
+        insurance_per_month_var.set(f"${monthly_insurance:,.2f}")
+        pmi_per_month_var.set(f"${monthly_pmi:,.2f}")
+        principal_per_month_var.set(f"${monthly_payment - loan_amount * monthly_interest_rate:,.2f}")
+        interest_per_month_var.set(f"${loan_amount * monthly_interest_rate:,.2f}")
+        total_monthly_payment_var.set(f"${total_monthly_payment:,.2f}")
+
+        log_time("Finished calculate_payment")
+    except ValueError:
+        messagebox.showerror("Input Error", "Please enter valid numbers.")
+
+def update_fields(*args):
+    log_time("Starting update_fields")
+    if loan_type_var.get() == "Refi":
+        purchase_price_label.config(text="Loan Amount")
+        down_payment_entry.config(state='disabled', disabledbackground='#A9A9A9')
+        annual_taxes_entry.config(state='normal', background='white')
+        annual_insurance_entry.config(state='normal', background='white')
+    else:
+        purchase_price_label.config(text="Purchase Price")
+        down_payment_entry.config(state='normal', background='white')
+        annual_taxes_entry.config(state='normal', background='white')
+        annual_insurance_entry.config(state='normal', background='white')
+    log_time("Finished update_fields")
+
+def reset_fields():
+    log_time("Starting reset_fields")
+    purchase_price_var.set("")
+    down_payment_var.set("")
+    annual_taxes_var.set("")
+    annual_insurance_var.set("")
+    annual_pmi_var.set("")
+    annual_interest_rate_var.set("")
+    loan_months_var.set("")
+    total_loan_amount_var.set("")
+    taxes_per_month_var.set("")
+    insurance_per_month_var.set("")
+    pmi_per_month_var.set("")
+    principal_per_month_var.set("")
+    interest_per_month_var.set("")
+    total_monthly_payment_var.set("")
+    log_time("Finished reset_fields")
+
+def create_main_window():
+    global purchase_price_var, down_payment_var, annual_taxes_var, annual_insurance_var, annual_pmi_var, annual_interest_rate_var, loan_months_var, total_loan_amount_var, taxes_per_month_var, insurance_per_month_var, pmi_per_month_var, principal_per_month_var, interest_per_month_var, total_monthly_payment_var, root, purchase_price_label, down_payment_entry, annual_taxes_entry, annual_insurance_entry, loan_type_var
+
+    log_time("Starting create_main_window")
+
+    root = tk.Tk()
+    root.title("Home Loan Calculator")
+    root.configure(background='#174A7C')
+    log_time("Created root window")
+
+    global logo_image
+    logo_image = PhotoImage(data=logo_base64)
+    logo_label = tk.Label(root, image=logo_image, bg='#174A7C')
+    logo_label.grid(row=0, column=0, columnspan=2, pady=10)
+    log_time("Loaded logo image")
+
+    loan_type_var = tk.StringVar(value="Purchase")
+    loan_type_var.trace("w", update_fields)
+    loan_type_label = tk.Label(root, text="Loan Type", bg='#174A7C', fg='white')
+    loan_type_label.grid(row=1, column=0, sticky='e', padx=10, pady=5)
+    loan_type_dropdown = ttk.Combobox(root, textvariable=loan_type_var, values=["Purchase", "Refi"])
+    loan_type_dropdown.grid(row=1, column=1, padx=10, pady=5, sticky='ew')
+    log_time("Created loan type dropdown")
+
+    purchase_price_var = tk.StringVar()
+    down_payment_var = tk.StringVar()
+    annual_taxes_var = tk.StringVar()
+    annual_insurance_var = tk.StringVar()
+    annual_pmi_var = tk.StringVar()
+    annual_interest_rate_var = tk.StringVar()
+    loan_months_var = tk.StringVar()
+    total_loan_amount_var = tk.StringVar()
+    taxes_per_month_var = tk.StringVar()
+    insurance_per_month_var = tk.StringVar()
+    pmi_per_month_var = tk.StringVar()
+    principal_per_month_var = tk.StringVar()
+    interest_per_month_var = tk.StringVar()
+    total_monthly_payment_var = tk.StringVar()
+
+    fields = [
+        ("Purchase Price", purchase_price_var),
+        ("Down Payment*", down_payment_var),
+        ("Annual Taxes*", annual_taxes_var),
+        ("Annual Insurance*", annual_insurance_var),
+        ("Annual PMI (%)*", annual_pmi_var),
+        ("Annual Interest Rate (%)", annual_interest_rate_var),
+        ("Loan Months", loan_months_var)
+    ]
+
+    tooltips = [
+        "The price of the home you want to purchase or the loan amount for a refinance.",
+        "The amount you are paying upfront for the home.",
+        "The annual property taxes for the home.",
+        "The annual homeowners insurance cost.",
+        "The percentage of the loan amount that you pay as private mortgage insurance.",
+        "The annual interest rate on the loan.",
+        "The number of months over which the loan will be repaid."
+    ]
+
+    for i, (field, tooltip) in enumerate(zip(fields, tooltips), start=2):
+        label, var = field
+        tk.Label(root, text=label, bg='#174A7C', fg='white').grid(row=i, column=0, sticky='e', padx=10, pady=5)
+        entry = tk.Entry(root, textvariable=var)
+        entry.grid(row=i, column=1, padx=10, pady=5, sticky='ew')
+        Tooltip(entry, tooltip)
+        if label == "Purchase Price":
+            purchase_price_label = tk.Label(root, text=label, bg='#174A7C', fg='white')
+            purchase_price_label.grid(row=i, column=0, sticky='e', padx=10, pady=5)
+        if label == "Down Payment*":
+            down_payment_entry = entry
+        if label == "Annual Taxes*":
+            annual_taxes_entry = entry
+        if label == "Annual Insurance*":
+            annual_insurance_entry = entry
+    log_time("Created input fields")
+
+    results = [
+        ("Total Loan Amount", total_loan_amount_var),
+        ("Taxes per Month", taxes_per_month_var),
+        ("Insurance per Month", insurance_per_month_var),
+        ("PMI per Month", pmi_per_month_var),
+        ("Principal per Month", principal_per_month_var),
+        ("Interest per Month", interest_per_month_var),
+        ("Total Monthly Payment", total_monthly_payment_var)
+    ]
+
+    for i, (label, var) in enumerate(results, start=len(fields) + 2):
+        tk.Label(root, text=label, bg='#174A7C', fg='white').grid(row=i, column=0, sticky='e', padx=10, pady=5)
+        tk.Label(root, textvariable=var, bg='#174A7C', fg='white').grid(row=i, column=1, sticky='w')
+    log_time("Created result fields")
+
+    calculate_button = tk.Button(root, text="Compute Payment", command=calculate_payment, bg='#EE3524', fg='white')
+    calculate_button.grid(row=len(fields) + len(results) + 2, column=0, columnspan=2, pady=10)
+    log_time("Created compute payment button")
+
+    amortization_button = tk.Button(root, text="Show Amortization Schedule", command=show_amortization_schedule, bg='#EE3524', fg='white')
+    amortization_button.grid(row=len(fields) + len(results) + 3, column=0, columnspan=2, pady=10)
+    log_time("Created amortization button")
+
+    reset_button = tk.Button(root, text="Reset", command=reset_fields, bg='#EE3524', fg='white')
+    reset_button.grid(row=len(fields) + len(results) + 4, column=0, columnspan=2, pady=10)
+    log_time("Created reset button")
+
+    legend_label = tk.Label(root, text="* are optional", bg='#174A7C', fg='white')
+    legend_label.grid(row=len(fields) + len(results) + 5, column=0, columnspan=2, pady=10)
+    log_time("Created legend label")
+
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+    root.grid_columnconfigure(1, weight=1)
+
+    for i in range(1, len(fields) + len(results) + 6):
+        root.grid_rowconfigure(i, weight=1)
+
+    log_time("Starting main loop")
+    root.mainloop()
+
+if __name__ == "__main__":
+    create_main_window()
